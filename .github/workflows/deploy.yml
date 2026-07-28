@@ -1,0 +1,69 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: container-registry.br-se1.magalu.cloud
+  IMAGE_NAME: cloud-application
+
+jobs:
+  test:
+    name: Testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: |
+          pip install poetry==1.8.3
+          poetry config virtualenvs.create false
+          poetry install --no-root
+
+      - name: Rodar pytest
+        run: pytest -q
+
+  build-and-deploy:
+    name: Build e deploy
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login no Container Registry da MGC
+        uses: docker/login-action@v3
+        with:
+          registry: container-registry.br-se1.magalu.cloud
+          username: ${{ secrets.MGC_REGISTRY_USER }}
+          password: ${{ secrets.MGC_REGISTRY_PASSWORD }}
+
+      - name: Build e push da imagem
+        env:
+          MGC_REGISTRY_NAME: ${{ secrets.MGC_REGISTRY_NAME }}
+        run: |
+          IMAGE="$REGISTRY/$MGC_REGISTRY_NAME/$IMAGE_NAME"
+          docker build -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"
+
+      - name: Configurar kubectl
+        env:
+          MGC_KUBECONFIG: ${{ secrets.MGC_KUBECONFIG }}
+        run: |
+          printf '%s' "$MGC_KUBECONFIG" > kubeconfig.yaml
+          chmod 600 kubeconfig.yaml
+
+      - name: Aplicar manifests
+        env:
+          KUBECONFIG: kubeconfig.yaml
+          MGC_REGISTRY_NAME: ${{ secrets.MGC_REGISTRY_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          envsubst < k8s/app.yaml | kubectl apply -f -
+          kubectl rollout status deployment/cloud-application --timeout=180s

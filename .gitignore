@@ -10,4 +10,5 @@ dist/
 .claude/
 .claude-flow/
 .mcp.json
+*.db
 
