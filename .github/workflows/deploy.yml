@@ -59,6 +59,15 @@ jobs:
           printf '%s' "$MGC_KUBECONFIG" > kubeconfig.yaml
           chmod 600 kubeconfig.yaml
 
+      - name: Criar Secret do banco
+        env:
+          KUBECONFIG: kubeconfig.yaml
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          kubectl create secret generic db-secret \
+            --from-literal=url="$DATABASE_URL" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Aplicar manifests
         env:
           KUBECONFIG: kubeconfig.yaml
