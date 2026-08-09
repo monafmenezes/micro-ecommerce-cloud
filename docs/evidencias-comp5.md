@@ -12,7 +12,7 @@ colocar Prometheus e Grafana no ar e comprovar a auto-recuperação do Kubernete
 | Instância DBaaS | `move-tech-db` — PostgreSQL 17, IP privado `172.18.2.20` |
 | Prometheus | Helm chart `kube-prometheus-stack`, namespace `monitoring`, `http://201.23.86.100:9090` |
 | Grafana | mesma stack, `http://201.23.86.100:3000` |
-| Commit | `<preencher no commit>` — `k8s/servicemonitor.yaml` |
+| Commit | `7379ac1` — `k8s/servicemonitor.yaml` |
 
 ---
 
@@ -103,5 +103,64 @@ Dashboard `Kubernetes / Compute Resources / Workload`, filtrado para
 A queda visível no gráfico de CPU por volta das 15:40–15:45 corresponde ao momento em
 que a aplicação foi reduzida de 2 para 1 réplica (ajuste de recursos feito durante a
 sessão, ver nota da seção 3).
+
+## 6. Simular falha e observar a recuperação automática
+
+Duas formas diferentes de auto-recuperação apareceram nesta sessão — vale registrar as
+duas porque o Kubernetes usa mecanismos distintos para cada uma.
+
+**a) `kubectl delete pod` — o ReplicaSet recria o pod (Etapa 9, deliberado)**
+
+```console
+$ kubectl get pods
+NAME                                 READY   STATUS    RESTARTS   AGE
+cloud-application-64ddbf775c-plp4x   1/1     Running   0          107s
+cloud-application-64ddbf775c-wcnnj   1/1     Running   0          2m11s
+
+$ kubectl delete pod cloud-application-64ddbf775c-plp4x
+pod "cloud-application-64ddbf775c-plp4x" deleted
+
+$ kubectl get pods   # 9s depois
+NAME                                 READY   STATUS    RESTARTS   AGE
+cloud-application-64ddbf775c-48fd5   0/1     Running   0          9s
+cloud-application-64ddbf775c-wcnnj   1/1     Running   0          2m30s
+
+$ kubectl get pods   # 17s depois — pronto
+cloud-application-64ddbf775c-48fd5   1/1     Running   0          17s
+
+$ kubectl describe deployment cloud-application
+Conditions:
+  Type           Status  Reason
+  Progressing    True    NewReplicaSetAvailable
+  Available      True    MinimumReplicasAvailable
+NewReplicaSet:   cloud-application-64ddbf775c (2/2 replicas created)
+```
+
+O ReplicaSet nota que faltou 1 réplica pro total desejado (2) e cria um pod novo — não é
+o *mesmo* pod voltando, é outro objeto do zero. Recuperado em 17s.
+
+**b) Liveness probe reiniciando o container (achado real, não planejado)**
+
+No início da sessão, a VM e o banco tinham sido desligados (crédito da MGC expirado).
+Ao religar só a VM primeiro, o `/health` ficou tentando conectar num banco ainda
+desligado — a conexão travou, a *liveness probe* estourou o timeout e o kubelet matou o
+container repetidamente (`CrashLoopBackOff`), até o banco ser religado também:
+
+```console
+$ kubectl describe pod cloud-application-...
+Warning  Unhealthy  kubelet  Liveness probe failed: context deadline exceeded
+Normal   Killing    kubelet  Container failed liveness probe, will be restarted
+```
+
+Diferença importante: aqui é o **mesmo** pod, o container é que reinicia — por isso o
+`RESTARTS` sobe (chegou a 12) em vez de aparecer um pod novo. Essa contagem ficou
+registrada no Prometheus via `kube-state-metrics` mesmo depois do incidente resolvido:
+
+![Prometheus — restarts do container por pod](img/comp5-prometheus-restarts.png)
+
+| Mecanismo | Gatilho | O que muda |
+|---|---|---|
+| ReplicaSet recria pod | `kubectl delete pod`, node falha, etc. | Pod novo (nome/UID diferentes), `RESTARTS` do pod removido não conta |
+| Liveness probe reinicia container | `/health` falha N vezes seguidas | Mesmo pod, `RESTARTS` incrementa |
 
 [↑ Índice](#evidências--competência-5-observabilidade-e-resiliência)
